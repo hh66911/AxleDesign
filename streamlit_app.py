@@ -145,38 +145,63 @@ st.table(df)
 
 #---------------------------------------
 # region 确定轴形状
-def make_shaft_ui(d_init: int, gears: list[int]):
+def make_shaft_ui(d_init: int, gears: list[int], is_IO=False):
     cols = df.columns[gears]
     bs = df.loc['齿宽 (mm)', cols].values
+    bs = map(float, bs)
     st.write(f'轴上齿轮宽度总和：{sum(bs)} mm')
-    s_length = st.number_input('轴长度 (mm)', value=sum(bs) + 200)
+    s_length = st.number_input('草图长度 (mm)', value=sum(bs) + 200)
+    length_range = range(0, s_length + 2)
     
     bs = df.loc['齿宽 (mm)', :].values
+    bs = list(map(float, bs))
     ft = df.loc['切向力 (N)', :].values
     fr = df.loc['径向力 (N)', :].values
     fa = df.loc['轴向力 (N)', :].values
     ds = df.loc['分度圆直径 (mm)', :].values
     s = Shaft(d_init, s_length)
+        
     for i in gears:
-        gear_pos = st.select_slider(f'齿轮 {i} 位置 (mm)',
-            options=range(0, s_length + 1), value=round(sum(bs[:i])))
-        dir_inv = st.checkbox(f'齿轮 {i} 方向是否相反')
+        gear_pos = st.select_slider(f'齿轮 {i + 1} 位置 (mm)',
+            length_range, value=round(sum(bs[:i])))
+        dir_inv = st.checkbox(f'齿轮 {i + 1} 方向是否相反')
         if dir_inv:
             fti, fri, fai = -float(ft[i]), -float(fr[i]), -float(fa[i])
         else:
             fti, fri, fai = float(ft[i]), float(fr[i]), float(fa[i])
-        # print(fti, fri, fai)
         s.add_gear(gear_pos,
             float(bs[i]), float(ds[i]),
             fti, fri, fai)
+    
+    if is_IO:
+        coupling = st.select_slider('联轴器位置', length_range, 0)
+        s.fix_twist(coupling)
         
+    bear1 = st.select_slider('轴承 1 位置 (mm)', length_range, 0)
+    bear2 = st.select_slider('轴承 2 位置 (mm)', length_range, s_length)
+    s.fix_bearing(bear1, bear2)
+
     return s
 
-shaft = make_shaft_ui(diameters[0], [0])
+st.header(r'轴 $\text{I}$')
+shaft = make_shaft_ui(diameters[0], [0],
+                      st.checkbox('是否有联轴器'))
 shaft_plot = shaft.plot()
 st.pyplot(shaft_plot)
+
+forces = shaft.forces
+bends = shaft.bends
+st.write('xoy 平面受力：', *[f'{f[1]: .2f}，' for f in forces['y']])
+st.write('xoz 平面受力：', *[f'{f[1]: .2f}，' for f in forces['z']])
+st.write('xoy 平面弯矩：', *[f'{f[1]: .2f}，' for f in bends['y']])
+st.write('xoz 平面弯矩：', *[f'{f[1]: .2f}，' for f in bends['z']])
+
 passed, byfig, bzfig, tfig, sigma_fig = calc_typeB(shaft, TT)
+st.subheader('xoy 平面弯矩')
 st.pyplot(byfig)
+st.subheader('xoz 平面弯矩')
 st.pyplot(bzfig)
+st.subheader('xoy 平面转矩')
 st.pyplot(tfig)
+st.subheader('应力')
 st.pyplot(sigma_fig)

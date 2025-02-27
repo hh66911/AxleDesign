@@ -45,9 +45,12 @@ class Shaft:
         self.contour = []        # 原始轮廓
         self.chamfered_contour = []  # 倒角处理后的轮廓
         
-        self.forces = {'y': [], 'z': []}    # 受力
-        self.bends  = {'y': [], 'z': []}    # 受弯矩
+        self.forces = {'y': [], 'z': []}    # 受力 [位置, 数量]
+        self.bends  = {'y': [], 'z': []}    # 受弯矩 [位置, 数量]
         self.twists = []                    # 受转矩
+        
+        self.bearing_pos = []
+        self.coupling_pos = None
 
     def add_force(self, pos, val_y=+0., val_z=+0.):
         '''
@@ -61,9 +64,9 @@ class Shaft:
             val_z: float
                 z方向数量（正方向向下）
         '''
-        if val_y != 0:
+        if abs(val_y) > 0.1:
             self.forces['y'].append((pos, val_y))
-        if val_z != 0:
+        if abs(val_z) > 0.1:
             self.forces['z'].append((pos, val_z))
         
     def add_bend(self, pos, val_y=+0., val_z=+0.):
@@ -78,9 +81,9 @@ class Shaft:
             val_z: float
                 z方向数量（正方向为逆时针）
         '''
-        if val_y != 0:
+        if abs(val_y) > 0.1:
             self.bends['y'].append((pos, val_y))
-        if val_z != 0:
+        if abs(val_z) > 0.1:
             self.bends['z'].append((pos, val_z))
             
     def add_twist(self, pos, val):
@@ -93,7 +96,13 @@ class Shaft:
             val: float
                 数量
         '''
-        self.twists.append((pos, val))
+        if val != 0:
+            self.twists.append((pos, val))
+
+    def fix_twist(self, pos):
+        twist_sum = sum(map(lambda x: x[1], self.twists))
+        self.add_twist(pos, -twist_sum)
+        self.coupling_pos = pos
 
     def add_step(self, position, diameter):
         self.steps.append((position, diameter))
@@ -108,8 +117,27 @@ class Shaft:
         self.gears.append((position, width, diameter))
         position = position + width / 2
         self.add_force(position, ft, fr)
-        self.add_bend(position, 0, fa * diameter / 2e-3)
-        self.add_twist(position, ft * diameter / 2e-3)
+        self.add_bend(position, 0, fa * diameter)
+        self.add_twist(position, ft * diameter)
+
+    def fix_bearing(self, p1, p2, width=0):
+        p1, p2 = p1 + width / 2, p2 + width / 2
+        # 计算轴承 y 平面的力
+        f_sum = sum(map(lambda x: x[1], self.forces['y']))
+        m_sum = sum(map(lambda x: x[0] * x[1], self.forces['y'])) - \
+                    sum(map(lambda x: x[1], self.bends['y']))
+        f1y = (m_sum - p2 * f_sum) / (p1 - p2)
+        f2y = f_sum - f1y
+        # 计算轴承 z 平面的力
+        f_sum = sum(map(lambda x: x[1], self.forces['z']))
+        m_sum = sum(map(lambda x: x[0] * x[1], self.forces['z'])) - \
+                    sum(map(lambda x: x[1], self.bends['z']))
+        f1z = (m_sum - p2 * f_sum) / (p1 - p2)
+        f2z = f_sum - f1z
+        # 添加轴承力
+        self.add_force(p1, -f1y, -f1z)
+        self.add_force(p2, -f2y, -f2z)
+        self.bearing_pos = [p1, p2]
 
     def _get_diameter_at(self, pos, events):
         """核心方法：获取指定位置的直径"""
@@ -297,15 +325,47 @@ class Shaft:
             draw_dir = (1 if val < 0 else -1) * self.length / 20
             ax.arrow(pos, 0, 0, draw_dir, head_width=2, head_length=4, fc='r', ec='r')
             
-        # 绘制弯矩
+        # 绘制 y 方向的弯矩
         for pos, val in self.bends['y']:
-            draw_dir = (1 if val < 0 else -1) * 90
-            body = Arc((pos, 0), 10, 10, theta1=0, theta2=draw_dir, edgecolor='r', lw=2)
-            ax.add_patch(body)
+            # 生成圆弧的点
+            if val > 0:
+                theta = np.linspace(-np.pi / 2, 0, 100)
+            else:
+                theta = np.linspace(np.pi, np.pi / 2, 100)
+            x = pos + 10 * np.cos(theta)
+            # 为了区分 y 和 z 方向，将 z 方向的曲线在 y 轴上偏移
+            y_offset = 10  
+            y = y_offset + 10 * np.sin(theta)
+            if val > 0:
+                arror_d = (0, 1)
+            else:
+                arror_d = (1, 0)
+            # 根据不同的 z 深度设置不同的颜色透明度，模拟 3D 效果
+            alpha = 0.2 + (pos / max([p for p, _ in self.bends['y'] + self.bends['z']])) * 0.8
+            ax.plot(x, y, color='r', lw=2, alpha=alpha)
+            arrow_start = (x[-1], y[-1])
+            ax.arrow(arrow_start[0], arrow_start[1], arror_d[0], arror_d[1] ,
+                     head_width=2, head_length=4, fc='r', ec='r')
+
+        # 绘制 z 方向的弯矩
         for pos, val in self.bends['z']:
-            draw_dir = (1 if val < 0 else -1) * 90
-            body = Arc((pos, 0), 10, 10, theta1=90, theta2=90+draw_dir, edgecolor='r', lw=2)
-            ax.add_patch(body)
+            # 生成圆弧的点
+            if val > 0:
+                theta = np.linspace(-np.pi / 2, 0, 100)
+            else:
+                theta = np.linspace(np.pi, np.pi / 2, 100)
+            x = pos + 10 * np.cos(theta)
+            y = 10 * np.sin(theta)
+            if val > 0:
+                arror_d = (0, 1)
+            else:
+                arror_d = (1, 0)
+            # 根据不同的 z 深度设置不同的颜色透明度，模拟 3D 效果
+            alpha = 0.2 + (pos / max([p for p, _ in self.bends['y'] + self.bends['z']])) * 0.8
+            ax.plot(x, y, color='r', lw=2, alpha=alpha)
+            arrow_start = (x[-1], y[-1])
+            ax.arrow(arrow_start[0], arrow_start[1], arror_d[0], arror_d[1] ,
+                     head_width=3, head_length=4, fc='r', ec='r')
         
         # 绘制半圆形键槽
         for pos, length, width in self.keyways:
@@ -326,6 +386,12 @@ class Shaft:
         for pos, width, diameter in self.gears:
             gear = Rectangle((pos, -diameter/2), width, diameter, fc='orange', alpha=0.5)
             ax.add_patch(gear)
+            
+        # 绘制联轴器
+        if self.coupling_pos:
+            coupling = Rectangle((self.coupling_pos, -self.initial_diameter/2),
+                                 10, self.initial_diameter, fc='green', alpha=0.5)
+            ax.add_patch(coupling)
         
         plt.title("Improved Shaft Visualization")
         plt.xlabel("Axial Position (mm)")
@@ -351,14 +417,14 @@ def calc_typeA(P: float, n: float, tT: float, c: int):
         d: float
             轴的直径
     '''
-    d = (9550000 / 0.2 / tT * P / n) ** (1/3)
+    d = (9.55e6 / 0.2 / tT * P / n) ** (1/3)
     if d <= 100:
         if c == 1:
             d = d * 1.06
         elif c == 2:
             d = d * 1.14
         else:
-            d = d * (1 + 0.07 * c)
+            d = None
     else:
         d = d * (1 + 0.03 * c)
     return d
@@ -378,24 +444,15 @@ def calc_typeB(s: Shaft, sigT: float, alpha=0.6, sample_N=5000):
     '''
     # 计算弯矩
     length = s.length
-    fpos, fval = zip(*s.forces['y']) if s.forces['y'] else [], []
-    bpos, bval = zip(*s.bends['y']) if s.bends['y'] else [], []
-    (_, bend_y), byfig = m_graph(fpos, fval,
-                            bpos, bval, length,
-                            sample_N)
-    fpos, fval = zip(*s.forces['z']) if s.forces['z'] else [], []
-    bpos, bval = zip(*s.bends['z']) if s.bends['z'] else [], []
-    (_, bend_z), bzfig = m_graph(fpos, fval,
-                            bpos, bval, length,
-                            sample_N)
+    (_, bend_y), byfig = m_graph(s.forces['y'], s.bends['y'], length, sample_N)
+    (_, bend_z), bzfig = m_graph(s.forces['z'], s.bends['z'], length, sample_N)
     bend_total = np.sqrt(bend_y**2 + bend_z**2)
     # 计算扭矩
-    tpos, tval = zip(*s.twists)
-    (_, twist), tfig = t_graph(tpos, tval, length, sample_N)
+    (_, twist), tfig = t_graph(s.twists, length, sample_N)
     # 计算弯扭组合应力
     _, W = s.calculate_W(sample_N) # 计算截面模量
-    sigma_bend = bend_total / W
-    sigma_t = alpha * twist / W
+    sigma_bend = bend_total / W # MPa
+    sigma_t = alpha * twist / W # MPa
     sigma_total = (sigma_bend**2 + sigma_t**2)**0.5
     sigma_fig = plt.figure(figsize=(10, 4))
     pos = np.linspace(0, length, sample_N)
