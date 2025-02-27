@@ -99,10 +99,11 @@ class Shaft:
         if val != 0:
             self.twists.append((pos, val))
 
-    def fix_twist(self, pos):
+    def fix_twist(self, pos, fqy=0, fqz=0):
         twist_sum = sum(map(lambda x: x[1], self.twists))
         self.add_twist(pos, -twist_sum)
         self.coupling_pos = pos
+        self.add_force(pos, fqy, fqz)
 
     def add_step(self, position, diameter):
         self.steps.append((position, diameter))
@@ -113,12 +114,15 @@ class Shaft:
     def add_keyway(self, position, length, width):
         self.keyways.append((position, length, width))
 
-    def add_gear(self, position, width, diameter, fr, ft, fa):
-        self.gears.append((position, width, diameter))
-        position = position + width / 2
+    def add_gear(self, position, width, diameter, fr, ft, fa, bend_plane='z'):
         self.add_force(position, ft, fr)
-        self.add_bend(position, 0, fa * diameter)
-        self.add_twist(position, ft * diameter)
+        if bend_plane == 'z':
+            self.add_bend(position, 0, -fa * diameter / 2)
+        else:
+            self.add_bend(position, -fa * diameter / 2, 0)
+        self.add_twist(position, ft * diameter / 2)
+        position = position - width / 2
+        self.gears.append((position, width, diameter))
 
     def fix_bearing(self, p1, p2, width=0):
         p1, p2 = p1 + width / 2, p2 + width / 2
@@ -299,13 +303,14 @@ class Shaft:
             depth = b_h_dict[width] / 2 + 0.005 # 计算键槽深度
             W[keyway_index == i] = np.pi * d**3 / 32 - \
                 width * depth * (d - depth)**2 / 2 / d
+        
         return diameters, W
 
     def plot(self):
         if not self.chamfered_contour:
             self.process_features()
         
-        fig, ax = plt.subplots(figsize=(10, 4))
+        fig, ax = plt.subplots(figsize=(12, 4))
         ax.set_aspect('equal')
         
         # 处理倒角轮廓数据
@@ -334,8 +339,8 @@ class Shaft:
                 theta = np.linspace(np.pi, np.pi / 2, 100)
             x = pos + 10 * np.cos(theta)
             # 为了区分 y 和 z 方向，将 z 方向的曲线在 y 轴上偏移
-            y_offset = 10  
-            y = y_offset + 10 * np.sin(theta)
+            y_offset = -12 if val > 0 else 10
+            y = y_offset + 10 * np.sin(theta) / 2
             if val > 0:
                 arror_d = (0, 1)
             else:
@@ -345,7 +350,7 @@ class Shaft:
             ax.plot(x, y, color='r', lw=2, alpha=alpha)
             arrow_start = (x[-1], y[-1])
             ax.arrow(arrow_start[0], arrow_start[1], arror_d[0], arror_d[1] ,
-                     head_width=2, head_length=4, fc='r', ec='r')
+                     head_width=2, head_length=2, fc='r', ec='r')
 
         # 绘制 z 方向的弯矩
         for pos, val in self.bends['z']:
@@ -388,14 +393,14 @@ class Shaft:
             ax.add_patch(gear)
             
         # 绘制联轴器
-        if self.coupling_pos:
-            coupling = Rectangle((self.coupling_pos, -self.initial_diameter/2),
+        if self.coupling_pos is not None:
+            coupling = Rectangle((self.coupling_pos - 5, -self.initial_diameter/2),
                                  10, self.initial_diameter, fc='green', alpha=0.5)
             ax.add_patch(coupling)
         
         plt.title("Improved Shaft Visualization")
-        plt.xlabel("Axial Position (mm)")
-        plt.ylabel("Radial Dimension (mm)")
+        plt.xlabel("X (mm)")
+        plt.ylabel("Y (mm)")
         plt.grid(True)
         return fig
 
