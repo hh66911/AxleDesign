@@ -3,7 +3,6 @@ from streamlit_cookies_controller import CookieController
 from mygraph import m_graph
 from modeling import Shaft, PutSide, calc_typeA, calc_typeB, get_feature_name
 import pandas as pd
-import re
 import numpy as np
 
 
@@ -268,7 +267,7 @@ def design_shaft_ui(session_state, shaft, length_range, s_length):
         steps_table = pd.DataFrame(steps_table, columns=['位置', '尺寸', '类型'])
         steps_table.index.name = '序号'
         steps_table = st.data_editor(steps_table, key='stepdata')
-        deleted = steps_table.index[steps_table.isna().sum(1)]
+        deleted = steps_table.index[steps_table.isna().sum(1) > 0]
         for didx in deleted:
             target = steps[didx]
             target_feature_dict = {
@@ -300,7 +299,7 @@ def design_shaft_ui(session_state, shaft, length_range, s_length):
             shoulders_table, columns=['位置', '高度', '宽度'])
         shoulders_table.index.name = '序号'
         shoulders_table = st.data_editor(shoulders_table, key='shoulderdata')
-        deleted = shoulders_table.index[shoulders_table.isna().sum(1)]
+        deleted = shoulders_table.index[shoulders_table.isna().sum(1) > 0]
         for didx in deleted:
             target = shoulders[didx]
             target_feature_dict = {
@@ -427,11 +426,11 @@ def make_shaft_ui(d_init: float, gears: list[int]):
 
     # 创建轴对象
     shaft = Shaft(d_init)
-    shaft.end_at(s_length)
 
     # 处理轴外形
     placable_feats = design_shaft_ui(session_state, shaft,
                     length_range, s_length)
+    shaft.end_at(s_length)
     # print(session_state['features'])
 
     # 处理齿轮配置
@@ -454,7 +453,8 @@ def make_shaft_ui(d_init: float, gears: list[int]):
     for params in gear_params:
         if params['rely'] is None:
             continue
-        shaft.add_gear(params['rely'],
+        try:
+            shaft.add_gear(params['rely'],
                        params['diameter'],
                        params['width'],
                        params['radial_force'],
@@ -463,6 +463,8 @@ def make_shaft_ui(d_init: float, gears: list[int]):
                        params['force_plane'],
                        params['putside']
                        )
+        except TypeError:
+            st.rerun()
 
     # 处理联轴器
     if st.checkbox('是否有联轴器', value=session_state.get('has_coupling', False)):
@@ -489,44 +491,45 @@ def make_shaft_ui(d_init: float, gears: list[int]):
     return shaft
 
 
-sel_axle = st.radio('选择轴', ['I', 'II', 'III'])
-if 'axle_data' not in st.session_state:
-    st.session_state.axle_data = {}
+if __name__ == '__main__':
+    sel_axle = st.radio('选择轴', ['I', 'II', 'III'])
+    if 'axle_data' not in st.session_state:
+        st.session_state.axle_data = {}
 
-st.header(rf'轴 $\text{{{sel_axle}}}$')
+    st.header(rf'轴 $\text{{{sel_axle}}}$')
 
-if sel_axle in st.session_state.axle_data:
-    st.session_state.sel_axle = st.session_state.axle_data[sel_axle]
-match sel_axle:
-    case 'I':
-        shaft = make_shaft_ui(diameters[0], [0])
-    case 'II':
-        shaft = make_shaft_ui(diameters[1], [1, 2])
-    case 'III':
-        shaft = make_shaft_ui(diameters[2], [3])
-    case _:
-        raise ValueError('轴选择错误')
-st.session_state.axle_data[sel_axle] = st.session_state.sel_axle
+    if sel_axle in st.session_state.axle_data:
+        st.session_state.sel_axle = st.session_state.axle_data[sel_axle]
+    match sel_axle:
+        case 'I':
+            shaft = make_shaft_ui(diameters[0], [0])
+        case 'II':
+            shaft = make_shaft_ui(diameters[1], [1, 2])
+        case 'III':
+            shaft = make_shaft_ui(diameters[2], [3])
+        case _:
+            raise ValueError('轴选择错误')
+    st.session_state.axle_data[sel_axle] = st.session_state.sel_axle
 
-shaft_plot = shaft.plot()
-st.pyplot(shaft_plot)
+    shaft_plot = shaft.plot()
+    st.pyplot(shaft_plot)
 
-forces = shaft.forces
-bends = shaft.bends
-st.write('xoy 平面受力：', *[f'{f[1]: .2f}，' for f in forces['y']])
-st.write('xoz 平面受力：', *[f'{f[1]: .2f}，' for f in forces['z']])
-st.write('xoy 平面弯矩：', *[f'{f[1]: .2f}，' for f in bends['y']])
-st.write('xoz 平面弯矩：', *[f'{f[1]: .2f}，' for f in bends['z']])
+    forces = shaft.forces
+    bends = shaft.bends
+    st.write('xoy 平面受力：', *[f'{f[1]: .2f}，' for f in forces['y']])
+    st.write('xoz 平面受力：', *[f'{f[1]: .2f}，' for f in forces['z']])
+    st.write('xoy 平面弯矩：', *[f'{f[1]: .2f}，' for f in bends['y']])
+    st.write('xoz 平面弯矩：', *[f'{f[1]: .2f}，' for f in bends['z']])
 
-if st.button('计算受力'):
-    passed, byfig, bzfig, tfig, sigma_fig = calc_typeB(
-        shaft, input_params['sig_f'])
-    st.subheader('xoy 平面弯矩')
-    st.pyplot(byfig)
-    st.subheader('xoz 平面弯矩')
-    st.pyplot(bzfig)
-    st.subheader('xoy 平面转矩')
-    st.pyplot(tfig)
-    st.subheader('应力')
-    st.pyplot(sigma_fig)
-    # endregion 确定轴尺寸
+    if st.button('计算受力'):
+        passed, byfig, bzfig, tfig, sigma_fig = calc_typeB(
+            shaft, input_params['sig_f'])
+        st.subheader('xoy 平面弯矩')
+        st.pyplot(byfig)
+        st.subheader('xoz 平面弯矩')
+        st.pyplot(bzfig)
+        st.subheader('xoy 平面转矩')
+        st.pyplot(tfig)
+        st.subheader('应力')
+        st.pyplot(sigma_fig)
+        # endregion 确定轴尺寸

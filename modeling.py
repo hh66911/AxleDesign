@@ -320,7 +320,7 @@ def _get_offset(feat, halfl, put_side):
         elif isinstance(feat, _BearingFeature):
             feature_width = feat.bearing.b / 2
         else:
-            raise ValueError("不支持的特征类型。")
+            raise TypeError(f"不支持的特征类型 {feat.__class__}")
 
         # 计算偏移量
         if put_side == PutSide.BEFORE:
