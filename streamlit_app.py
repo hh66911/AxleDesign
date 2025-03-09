@@ -1,7 +1,7 @@
 import streamlit as st
 from streamlit_cookies_controller import CookieController
 from mygraph import m_graph
-from modeling import Shaft, calc_typeA, calc_typeB
+from modeling import Shaft, PutSide, calc_typeA, calc_typeB
 import pandas as pd
 import sys
 import numpy as np
@@ -164,98 +164,206 @@ df = st.data_editor(df, use_container_width=True)
 
 # ---------------------------------------
 # region 确定轴尺寸
-def make_shaft_ui(d_init: int, gears: list[int]):
-    sel_axle = dict()
-    if 'sel_axle' in st.session_state:
-        sel_axle = st.session_state.sel_axle
+def get_default_value(session_state, key, default, min_val=1, max_val=None):
+    """从session_state获取值，若不存在则返回默认值并裁剪到有效范围"""
+    current_value = session_state.get(key, default)
+    if max_val is not None:
+        return np.clip(current_value, min_val, max_val)
+    return current_value
 
+
+def create_gear_ui(session_state, gear_idx, length_range, s_length, bs, fr, ft, fa, ds):
+    """创建单个齿轮的UI组件并返回配置"""
+    pos_key = f"gear_{gear_idx}_pos"
+    plane_key = f"gear_{gear_idx}_plane"
+
+    default_pos = get_default_value(
+        session_state, pos_key, round(sum(bs[:gear_idx])), 1, s_length)
+    default_plane = get_default_value(session_state, plane_key, 0)
+
+    uicols = st.columns([2, 1])
+    with uicols[0]:
+        pos = st.select_slider(f'齿轮 {gear_idx + 1} 位置 (mm)',
+                               options=length_range,
+                               value=default_pos)
+    with uicols[1]:
+        plane = st.radio(f'轴向力平面',
+                         ['z', 'y'],
+                         index=default_plane)
+
+    return {
+        'position': pos,
+        'force_plane': plane,
+        'width': float(bs[gear_idx]),
+        'diameter': float(ds[gear_idx]),
+        'radial_force': float(fr[gear_idx]),
+        'tangential_force': float(ft[gear_idx]),
+        'axial_force': float(fa[gear_idx])
+    }
+
+
+def create_coupling_ui(session_state, length_range, s_length):
+    """创建联轴器UI组件并返回配置"""
+    default_pos = get_default_value(
+        session_state, 'coupling_pos', 1, 1, s_length-1)
+    default_force = session_state.get('coupling_force', 0.0)
+    default_dir = get_default_value(session_state, 'coupling_dir', 0)
+
+    uicols = st.columns([4, 1, 2])
+    with uicols[0]:
+        pos = st.select_slider(
+            '联轴器位置', options=length_range, value=default_pos)
+    with uicols[1]:
+        direction = st.radio('压轴力方向', ['y', 'z'], index=default_dir)
+    with uicols[2]:
+        force = st.number_input('压轴力 (N)', value=default_force)
+
+    return {
+        'position': pos,
+        'force': force,
+        'direction': direction
+    }
+
+
+def create_bearing_ui(session_state, length_range, s_length):
+    """创建轴承UI组件并返回配置"""
+    default_b1 = get_default_value(
+        session_state, 'bearing1_pos', 1, 1, s_length-1)
+    default_b2 = get_default_value(
+        session_state, 'bearing2_pos', s_length-1, 1, s_length-1)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        bear1 = st.select_slider(
+            '轴承 1 位置 (mm)', options=length_range, value=default_b1)
+    with col2:
+        bear2 = st.select_slider(
+            '轴承 2 位置 (mm)', options=length_range, value=default_b2)
+
+    return {'bearing1': bear1, 'bearing2': bear2}
+
+
+def make_shaft_ui(d_init: float, gears: list[int]):
+    """创建轴设计UI并返回Shaft对象"""
+    session_state = st.session_state.get('sel_axle', {})
+
+    # 初始化参数
     cols = df.columns[gears]
-    bs = df.loc['齿宽 (mm)', cols].values
-    bs = map(float, bs)
-    st.write(f'轴上齿轮宽度总和：{sum(bs)} mm')
-    if 'slen' in sel_axle:
-        s_length_def = sel_axle['slen']
-    else:
-        s_length_def = sum(bs) + 200
-    s_length = st.number_input('草图长度 (mm)', value=s_length_def)
+    bs = df.loc['齿宽 (mm)', cols].astype(float).values
+    total_width = sum(bs)
+    st.write(f'轴上齿轮宽度总和：{total_width} mm')
+
+    s_length = st.number_input(
+        '草图长度 (mm)', value=int(get_default_value(
+            session_state, 'slen', total_width + 200)))
     length_range = range(1, s_length)
 
-    bs = df.loc['齿宽 (mm)', :].values
-    bs = list(map(float, bs))
-    ft = df.loc['切向力 (N)', :].values
-    fr = df.loc['径向力 (N)', :].values
-    fa = df.loc['轴向力 (N)', :].values
-    ds = df.loc['分度圆直径 (mm)', :].values
-    s = Shaft(d_init, s_length)
-
-    for i in gears:
-        if f'fa{i}' in sel_axle:
-            gear_pos_default = sel_axle[i]
-            gear_pos_default = np.clip(gear_pos_default, 1, s_length)
-            fa_plane_def = sel_axle[f'fa{i}']
+    # 创建轴对象
+    shaft = Shaft(d_init)
+    shaft.end_at(s_length)
+    
+    # 处理轴外形
+    features = get_default_value(session_state, 'features', [])
+    steps, shoulders = [], []
+    placable_feats = []
+    for f in features:
+        match f['type']:
+            case 'step':
+                if 'h' in f:
+                    steps.append((f['pos'], f['h'], '高度'))
+                    placable_feats.append(shaft.add_step(f['pos'], f['h']))
+                else:
+                    steps.append((f['pos'], f['d'], '直径'))
+                    placable_feats.append(shaft.add_step(f['pos'], diameter=f['d']))
+            case 'shoulder':
+                shoulders.append((f['pos'], f['h'], f['w']))
+                placable_feats.append(shaft.add_shoulder(f['pos'], f['h'], f['w']))
+    def strfmt(*v):
+        return (str(vv) if vv.is_integer() else f'{vv: .1f}' for vv in v)
+    steps_data = zip(*((*strfmt(s[:1]), s[2]) for s in steps))
+    shoulders_data = zip(*(strfmt(s) for s in shoulders))
+    steps_data = pd.DataFrame(steps_data, columns=['位置', '尺寸', '类型'])
+    steps_data.index.name = '序号'
+    shoulders_data = pd.DataFrame(shoulders_data, columns=['位置', '高度', '宽度'])
+    steps_data.index.name = '序号'
+    uicols = st.columns(2)
+    with uicols[0]:
+        st.data_editor(steps_data, key='stepdata')
+        pos = st.select_slider(
+            '阶梯位置', options=length_range, value=s_length / 2)
+        sz = st.number_input('尺寸', value=1)
+        stype = st.radio('尺寸类型', ['高度', '直径'], horizontal=True)
+        steps_data.add((pos, sz, stype))
+    with uicols[1]:
+        st.data_editor(steps_data, key='shoulderdata')
+        pos = st.select_slider(
+            '环位置', options=length_range, value=s_length / 2)
+        height = st.number_input('高度', value=1)
+        width = st.number_input('宽度', value=1)
+        shoulders_data.add((pos, height, width))
+    # 解析steps_data和shoulders_data，填充到features内
+    features = []
+    for idx, row in steps_data.iterrows():
+        pos, size, stype = row['位置'], row['尺寸'], row['类型']
+        if stype == '高度':
+            features.append({'type': 'step', 'pos': pos, 'h': size})
         else:
-            gear_pos_default = round(sum(bs[:i]))
-            sel_axle[i] = gear_pos_default
-            fa_plane_def = 0
-        uicols = st.columns([2, 1])
-        with uicols[0]:
-            gear_pos = st.select_slider(f'齿轮 {i + 1} 位置 (mm)',
-                length_range, value=gear_pos_default)
-        with uicols[1]:
-            fa_plane = st.radio(f'齿轮 {i + 1} 轴向力平面',
-                ['z', 'y'], index=fa_plane_def)
-        s.add_gear(gear_pos,
-                   float(bs[i]), float(ds[i]),
-                   float(fr[i]), float(ft[i]), float(fa[i]),
-                   fa_plane)
-        sel_axle[i] = gear_pos
-        sel_axle[f'fa{i}'] = ['z', 'y'].index(fa_plane)
+            features.append({'type': 'step', 'pos': pos, 'd': size})
 
-    is_IO = st.checkbox(
-        '是否有联轴器', value=sel_axle['IO'] if 'IO' in sel_axle else False)
-    if is_IO:
-        if 'fqdir' in sel_axle:
-            coupling_def = sel_axle['c']
-            coupling_def = np.clip(coupling_def, 1, s_length - 1)
-            fq_def = sel_axle['fq']
-            fqdir_def = sel_axle['fqdir']
-        else:
-            coupling_def = 1.
-            fq_def = 0.
-            fqdir_def = 0
-        uicols = st.columns([4, 1, 2])
-        with uicols[0]:
-            coupling = st.select_slider(
-                '联轴器位置', length_range, coupling_def)
-        with uicols[1]:
-            fqdir = st.radio('压轴力方向', ['y', 'z'], index=fqdir_def)
-        with uicols[2]:
-            fq = st.number_input('压轴力 (N)', value=fq_def)
-        if fqdir == 'y':
-            s.fix_twist(coupling, fq, 0)
-        else:
-            s.fix_twist(coupling, 0, fq)
-        sel_axle['c'] = coupling
-        sel_axle['fq'] = fq
-        sel_axle['fqdir'] = ['y', 'z'].index(fqdir)
+    for idx, row in shoulders_data.iterrows():
+        pos, height, width = row['位置'], row['高度'], row['宽度']
+        features.append({'type': 'shoulder', 'pos': pos, 'h': height, 'w': width})
 
-    if 'b' in sel_axle:
-        b1_def = sel_axle['b'][0]
-        b2_def = sel_axle['b'][1]
-        b1_def = np.clip(b1_def, 1, s_length - 1)
-        b2_def = np.clip(b2_def, 1, s_length - 1)
-    else:
-        b1_def = 1
-        b2_def = s_length - 1
-    bear1 = st.select_slider('轴承 1 位置 (mm)', length_range, b1_def)
-    bear2 = st.select_slider('轴承 2 位置 (mm)', length_range, b2_def)
-    sel_axle['b'] = [bear1, bear2]
+    session_state['features'] = features
 
-    st.session_state.sel_axle = sel_axle
+    # 处理齿轮配置
+    gear_params = []
+    for gear_idx in gears:
+        params = create_gear_ui(session_state, gear_idx,
+                                length_range, s_length,
+                                bs,
+                                df.loc['径向力 (N)', cols].values,
+                                df.loc['切向力 (N)', cols].values,
+                                df.loc['轴向力 (N)', cols].values,
+                                df.loc['分度圆直径 (mm)', cols].values)
+        gear_params.append(params)
+        session_state[f"gear_{gear_idx}_pos"] = params['position']
+        session_state[f"gear_{gear_idx}_plane"] = [
+            'z', 'y'].index(params['force_plane'])
 
-    s.fix_bearing(bear1, bear2)
+    # 添加齿轮到轴
+    for params in gear_params:
+        shaft.add_gear(params['position'],
+                       params['width'],
+                       params['diameter'],
+                       params['radial_force'],
+                       params['tangential_force'],
+                       params['axial_force'],
+                       params['force_plane'])
 
-    return s
+    # 处理联轴器
+    if st.checkbox('是否有联轴器', value=session_state.get('has_coupling', False)):
+        coupling_params = create_coupling_ui(
+            session_state, length_range, s_length)
+        direction = coupling_params['direction']
+        force = coupling_params['force']
+        shaft.fix_twist(coupling_params['position'],
+                        force if direction == 'y' else 0,
+                        force if direction == 'z' else 0)
+        session_state['coupling_pos'] = coupling_params['position']
+        session_state['coupling_force'] = force
+        session_state['coupling_dir'] = ['y', 'z'].index(direction)
+
+    # 处理轴承
+    bearing_params = create_bearing_ui(session_state, length_range, s_length)
+    shaft.fix_bearing(bearing_params['bearing1'], bearing_params['bearing2'])
+    session_state['bearing1_pos'] = bearing_params['bearing1']
+    session_state['bearing2_pos'] = bearing_params['bearing2']
+
+    # 保存状态
+    st.session_state.sel_axle = session_state
+
+    return shaft
 
 
 sel_axle = st.radio('选择轴', ['I', 'II', 'III'])
