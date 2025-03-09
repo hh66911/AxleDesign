@@ -140,6 +140,8 @@ for i in range(3):
 # ---------------------------------------
 # region 导入齿轮参数
 st.header('齿轮参数')
+st.link_button('如果你没有齿轮文件，点我设计计算并获取齿轮数据表', "https://geardesign.streamlit.app/")
+
 xlsx_file = st.file_uploader('上传齿轮参数文件', type=['xlsx'])
 if xlsx_file is None:
     st.write('请上传齿轮参数文件')
@@ -173,7 +175,7 @@ def get_default_value(session_state, key, default, min_val=1, max_val=None):
 
 def choose_feature_ui(features, label, key=None, default=None):
     if len(features) == 0:
-        st.subheader('暂无可以放置齿轮的位置')
+        st.subheader('暂无可以放置部件的位置')
         return None
 
     def _f(f):
