@@ -91,7 +91,8 @@ def input_params_ui():
         input_params['i'] = [i1, i2]
         # print(input_params)
 
-    controller.set('axle_params', input_params)
+    if st.button('保存'):
+        controller.set('axle_params', input_params)
     return input_params
 
 
@@ -177,7 +178,7 @@ def make_shaft_ui(d_init: int, gears: list[int]):
     else:
         s_length_def = sum(bs) + 200
     s_length = st.number_input('草图长度 (mm)', value=s_length_def)
-    length_range = range(0, s_length + 2)
+    length_range = range(1, s_length)
 
     bs = df.loc['齿宽 (mm)', :].values
     bs = list(map(float, bs))
@@ -190,16 +191,19 @@ def make_shaft_ui(d_init: int, gears: list[int]):
     for i in gears:
         if f'fa{i}' in sel_axle:
             gear_pos_default = sel_axle[i]
-            gear_pos_default = np.clip(gear_pos_default, 0, s_length)
+            gear_pos_default = np.clip(gear_pos_default, 1, s_length)
             fa_plane_def = sel_axle[f'fa{i}']
         else:
             gear_pos_default = round(sum(bs[:i]))
             sel_axle[i] = gear_pos_default
             fa_plane_def = 0
-        gear_pos = st.select_slider(f'齿轮 {i + 1} 位置 (mm)',
-                                    length_range, value=gear_pos_default)
-        fa_plane = st.radio(f'齿轮 {i + 1} 轴向力平面',
-                            ['z', 'y'], index=fa_plane_def)
+        uicols = st.columns([2, 1])
+        with uicols[0]:
+            gear_pos = st.select_slider(f'齿轮 {i + 1} 位置 (mm)',
+                length_range, value=gear_pos_default)
+        with uicols[1]:
+            fa_plane = st.radio(f'齿轮 {i + 1} 轴向力平面',
+                ['z', 'y'], index=fa_plane_def)
         s.add_gear(gear_pos,
                    float(bs[i]), float(ds[i]),
                    float(fr[i]), float(ft[i]), float(fa[i]),
@@ -208,20 +212,25 @@ def make_shaft_ui(d_init: int, gears: list[int]):
         sel_axle[f'fa{i}'] = ['z', 'y'].index(fa_plane)
 
     is_IO = st.checkbox(
-        '是否有联轴器', value=sel_axlev['IO'] if 'IO' in sel_axle else False)
+        '是否有联轴器', value=sel_axle['IO'] if 'IO' in sel_axle else False)
     if is_IO:
         if 'fqdir' in sel_axle:
             coupling_def = sel_axle['c']
-            coupling_def = np.clip(coupling_def, 0, s_length)
+            coupling_def = np.clip(coupling_def, 1, s_length - 1)
             fq_def = sel_axle['fq']
             fqdir_def = sel_axle['fqdir']
         else:
-            coupling_def = 0.
+            coupling_def = 1.
             fq_def = 0.
             fqdir_def = 0
-        coupling = st.select_slider('联轴器位置', length_range, coupling_def)
-        fqdir = st.radio('压轴力方向', ['y', 'z'], index=fqdir_def)
-        fq = st.number_input('压轴力 (N)', value=fq_def)
+        uicols = st.columns([4, 1, 2])
+        with uicols[0]:
+            coupling = st.select_slider(
+                '联轴器位置', length_range, coupling_def)
+        with uicols[1]:
+            fqdir = st.radio('压轴力方向', ['y', 'z'], index=fqdir_def)
+        with uicols[2]:
+            fq = st.number_input('压轴力 (N)', value=fq_def)
         if fqdir == 'y':
             s.fix_twist(coupling, fq, 0)
         else:
@@ -233,11 +242,11 @@ def make_shaft_ui(d_init: int, gears: list[int]):
     if 'b' in sel_axle:
         b1_def = sel_axle['b'][0]
         b2_def = sel_axle['b'][1]
-        b1_def = np.clip(b1_def, 0, s_length)
-        b2_def = np.clip(b2_def, 0, s_length)
+        b1_def = np.clip(b1_def, 1, s_length - 1)
+        b2_def = np.clip(b2_def, 1, s_length - 1)
     else:
-        b1_def = 0
-        b2_def = s_length
+        b1_def = 1
+        b2_def = s_length - 1
     bear1 = st.select_slider('轴承 1 位置 (mm)', length_range, b1_def)
     bear2 = st.select_slider('轴承 2 位置 (mm)', length_range, b2_def)
     sel_axle['b'] = [bear1, bear2]
@@ -278,14 +287,15 @@ st.write('xoz 平面受力：', *[f'{f[1]: .2f}，' for f in forces['z']])
 st.write('xoy 平面弯矩：', *[f'{f[1]: .2f}，' for f in bends['y']])
 st.write('xoz 平面弯矩：', *[f'{f[1]: .2f}，' for f in bends['z']])
 
-passed, byfig, bzfig, tfig, sigma_fig = calc_typeB(
-    shaft, input_params['sig_f'])
-st.subheader('xoy 平面弯矩')
-st.pyplot(byfig)
-st.subheader('xoz 平面弯矩')
-st.pyplot(bzfig)
-st.subheader('xoy 平面转矩')
-st.pyplot(tfig)
-st.subheader('应力')
-st.pyplot(sigma_fig)
-# endregion 确定轴尺寸
+if st.button('计算受力'):
+    passed, byfig, bzfig, tfig, sigma_fig = calc_typeB(
+        shaft, input_params['sig_f'])
+    st.subheader('xoy 平面弯矩')
+    st.pyplot(byfig)
+    st.subheader('xoz 平面弯矩')
+    st.pyplot(bzfig)
+    st.subheader('xoy 平面转矩')
+    st.pyplot(tfig)
+    st.subheader('应力')
+    st.pyplot(sigma_fig)
+    # endregion 确定轴尺寸
