@@ -55,7 +55,7 @@ class Angle:
 
 
 class Bearing:
-    size_df = pd.read_excel(r"D:\BaiduSyncdisk\球轴承尺寸.xlsx")
+    size_df = pd.read_excel("球轴承尺寸.xlsx")
 
     def __init__(self, code):
         self.code = code
