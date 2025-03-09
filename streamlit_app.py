@@ -140,6 +140,8 @@ for i in range(3):
 # ---------------------------------------
 # region 导入齿轮参数
 st.header('齿轮参数')
+st.link_button('如果你没有齿轮文件，点我设计计算并获取齿轮数据表', "https://geardesign.streamlit.app/")
+
 xlsx_file = st.file_uploader('上传齿轮参数文件', type=['xlsx'])
 if xlsx_file is None:
     st.write('请上传齿轮参数文件')
