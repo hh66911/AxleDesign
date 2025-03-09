@@ -161,8 +161,10 @@ class Shaft:
         events.append((0, self.initial_diameter))
         
         # 处理阶梯特征
+        current_diam = self.initial_diameter
         for pos, diam in self.steps:
-            events.append((pos, diam))
+            current_diam += diam
+            events.append((pos, current_diam))
         
         # 转换轴肩特征
         for pos, height, width in self.shoulders:
@@ -459,11 +461,14 @@ def calc_typeB(s: Shaft, sigT: float, alpha=0.6, sample_N=5000):
     sigma_bend = bend_total / W # MPa
     sigma_t = alpha * twist / W # MPa
     sigma_total = (sigma_bend**2 + sigma_t**2)**0.5
-    sigma_fig = plt.figure(figsize=(10, 4))
+    sigma_fig = plt.figure(figsize=(16, 6))
     pos = np.linspace(0, length, sample_N)
     plt.plot(pos, sigma_bend, label='Bending Stress')
     plt.plot(pos, sigma_t, label='Twisting Stress')
     plt.plot(pos, sigma_total, label='Total Stress')
+    max_pos, max_stress = pos[np.argmax(sigma_total)], np.max(sigma_total)
+    plt.text(max_pos, max_stress, f'{max_stress:.2f}', fontsize=14, color='red')
+    plt.plot([0, length], [sigT, sigT], 'r--', label='Allowable Stress')
     plt.xlabel('Position [mm]')
     plt.ylabel('Stress [MPa]')
     plt.legend()

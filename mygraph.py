@@ -6,8 +6,8 @@ plt.rcParams['font.serif'] = 'Times New Roman'
 plt.rcParams['font.size'] = 18
 
 def m_graph(f, b, l, n=5000):
-    forces = list(map(lambda x: (x[0], x[1]), sorted(f, key=lambda x: x[0])))
-    bends = list(map(lambda x: (x[0], x[1]), sorted(b, key=lambda x: x[0])))
+    forces = sorted(f, key=lambda x: x[0])
+    bends = sorted(b, key=lambda x: x[0])
     
     pos_values = np.linspace(0, l, n)
     M_values = np.zeros(n)
@@ -58,6 +58,7 @@ def m_graph(f, b, l, n=5000):
     return (pos_values, M_values), fig
 
 def t_graph(t, l, n=5000):
+    t = sorted(t, key=lambda x: x[0])
     pos_values = np.linspace(0, l, n)
     T_values = np.zeros(n)
     
@@ -66,9 +67,10 @@ def t_graph(t, l, n=5000):
         mask = pos_values > tpos
         if np.any(mask) == False:
             break
-        critical_points[tpos] = T_values[mask][0]
         T_values[mask] += t
-        
+        critical_points[tpos] = T_values[mask][0]
+    
+    # print(critical_points)
     # 删除起始的 0
     c_pos = list(critical_points.keys())
     for k in c_pos:
