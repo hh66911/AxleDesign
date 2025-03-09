@@ -1,9 +1,9 @@
 import streamlit as st
 from streamlit_cookies_controller import CookieController
 from mygraph import m_graph
-from modeling import Shaft, PutSide, calc_typeA, calc_typeB
+from modeling import Shaft, PutSide, calc_typeA, calc_typeB, get_feature_name
 import pandas as pd
-import sys
+import re
 import numpy as np
 
 
@@ -172,33 +172,200 @@ def get_default_value(session_state, key, default, min_val=1, max_val=None):
     return current_value
 
 
-def create_gear_ui(session_state, gear_idx, length_range, s_length, bs, fr, ft, fa, ds):
-    """创建单个齿轮的UI组件并返回配置"""
-    pos_key = f"gear_{gear_idx}_pos"
-    plane_key = f"gear_{gear_idx}_plane"
+def choose_feature_ui(features, label, key=None, default=None):
+    if len(features) == 0:
+        st.subheader('暂无可以放置齿轮的位置')
+        return None
 
-    default_pos = get_default_value(
-        session_state, pos_key, round(sum(bs[:gear_idx])), 1, s_length)
+    def _f(f):
+        name = get_feature_name(f, True)
+        return f'位于 {f.position} 处的{name}'
+    if default is not None and default in features:
+        default = features.index(default)
+    else:
+        default = 0
+    return st.selectbox(
+        label, features, default, format_func=_f, key=key)
+
+
+def design_shaft_ui(session_state, shaft, length_range, s_length):
+    """创建轴设计UI并返回Shaft对象"""
+    features = get_default_value(session_state, 'features', [])
+    steps, shoulders, bushings = [], [], []
+    placable_feats = []
+
+    def _feat_step_tuple(f, s=None):
+        pos = f['pos']
+        if 'h' in f:
+            r1 = (pos, f['h'], '高度')
+            if s is not None:
+                return r1, s.add_step(pos, f['h'])
+            return r1
+        elif 'd' in f:
+            r1 = (pos, f['h'], '高度')
+            if s is not None:
+                return r1, s.add_step(pos, diameter=f['d'])
+            return r1
+        else:
+            raise ValueError
+
+    for f in features:
+        if f['type'] == 'bushing':
+            feat = f['feat']
+            if feat in steps:
+                pmt = f'位于 {feat.pos} 处的阶梯'
+            elif feat in shoulders:
+                pmt = f'位于 {feat.pos} 处的轴环'
+            else:
+                continue
+            bushings.append((pmt, f['h'], f['w'], f['side']))
+            placable_feats.append(shaft.add_bushing(
+                feat, f['h'], f['w'], PutSide(f['side'])))
+            continue
+
+        pos = f['pos']
+        match f['type']:
+            case 'step':
+                ss, pf = _feat_step_tuple(f, shaft)
+                steps.append(ss)
+                placable_feats.append(pf)
+            case 'shoulder':
+                shoulders.append((pos, f['h'], f['w']))
+                placable_feats.append(shaft.add_shoulder(pos, f['h'], f['w']))
+
+    def strfmt(fvals, decimals=1):
+        def _parse(fval):
+            if isinstance(fval, str):
+                return fval
+            return f'{fval:.{decimals}f}'.rstrip('0').rstrip('.')
+        if isinstance(fvals, (tuple, list)):
+            return (_parse(val) for val in fvals)
+        else:
+            return _parse(fvals)
+
+    def _feature_conflict(f, fs):
+        return any((
+            ff['type'] == f['type']
+            for ff in fs if ff['pos'] == f['pos']
+        ))
+    uicols = st.columns(2)
+    with uicols[0]:
+        pos = st.select_slider(
+            '阶梯位置', options=length_range, value=s_length / 2)
+        sz = st.number_input('尺寸', value=1)
+        stype = st.radio('尺寸类型', ['高度', '直径'], horizontal=True)
+        if st.button('添加阶梯', use_container_width=True):
+            new = {'type': 'step', 'pos': pos}
+            if stype == '高度':
+                new['h'] = sz
+            else:
+                new['d'] = sz
+            if not _feature_conflict(new, features):
+                features.append(new)
+                new, pf = _feat_step_tuple(new, shaft)
+                steps.append(new)
+        steps_table = ((*strfmt(s[:2]), s[2]) for s in steps)
+        steps_table = pd.DataFrame(steps_table, columns=['位置', '尺寸', '类型'])
+        steps_table.index.name = '序号'
+        steps_table = st.data_editor(steps_table, key='stepdata')
+        deleted = steps_table.index[steps_table.isna().sum(1)]
+        for didx in deleted:
+            target = steps[didx]
+            target_feature_dict = {
+                'type': 'step', 'pos': target[0]
+            }
+            if target[2] == '高度':
+                target_feature_dict['h'] = target[1]
+            else:
+                target_feature_dict['d'] = target[1]
+            features.remove(target_feature_dict)
+        steps = [s for i, s in enumerate(steps) if i not in deleted]
+    with uicols[1]:
+        pos = st.select_slider(
+            '环位置', options=length_range, value=s_length / 2)
+        height = st.number_input('高度', value=1, key='shoulder_height')
+        width = st.number_input('宽度', value=1, key='shoulder_width')
+        if st.button('添加轴肩', use_container_width=True):
+            new = {
+                'type': 'shoulder',
+                'pos': pos, 'h': height, 'w': width
+            }
+            if not _feature_conflict(new, features):
+                features.append()
+                shoulders.append((pos, height, width))
+                placable_feats.append(shaft.add_shoulder(
+                    pos, height, width))
+        shoulders_table = (strfmt(s) for s in shoulders)
+        shoulders_table = pd.DataFrame(
+            shoulders_table, columns=['位置', '高度', '宽度'])
+        shoulders_table.index.name = '序号'
+        shoulders_table = st.data_editor(shoulders_table, key='shoulderdata')
+        deleted = shoulders_table.index[shoulders_table.isna().sum(1)]
+        for didx in deleted:
+            target = shoulders[didx]
+            target_feature_dict = {
+                'type': 'shoulder', 'pos': target[0],
+                'h': target[1], 'w': target[2]
+            }
+            features.remove(target_feature_dict)
+        shoulders = [s for i, s in enumerate(shoulders) if i not in deleted]
+
+    f = choose_feature_ui(placable_feats, 'bushings')
+    height = st.number_input('高度', value=1, key='bushing_height')
+    width = st.number_input('宽度', value=1, key='bushing_width')
+    dire = st.selectbox('放置方向', ['after', 'before'])
+    if st.button('添加套筒', use_container_width=True):
+        new = {
+            'type': 'bushing', 'feat': f,
+            'h': height, 'w': width,
+            'side': dire
+        }
+        if not _feature_conflict(new, features):
+            features.append(new)
+            shoulders.append((pos, height, width))
+            placable_feats.append(shaft.add_shoulder(
+                pos, height, width))
+    bushings_table = ((s[0], *strfmt(s[1:3]), s[3]) for s in bushings)
+    bushings_table = pd.DataFrame(bushings_table, columns=[
+        '紧贴', '高度', '宽度', '方向'])
+    st.data_editor(bushings_table, key='bushingsdata')
+
+    session_state['features'] = features
+    return placable_feats
+
+
+def create_gear_ui(session_state, gear_idx, feats, bs, fr, ft, fa, ds):
+    """创建单个齿轮的UI组件并返回配置"""
+    rely_key = f'gear_{gear_idx}_rely'
+    plane_key = f"gear_{gear_idx}_plane"
+    putside_key = f"gear_{gear_idx}_putside"
+    mirrored_key = f"gear_{gear_idx}_mirrored"
+
+    default_rely = get_default_value(session_state, rely_key, None)
     default_plane = get_default_value(session_state, plane_key, 0)
+    default_putside = get_default_value(session_state, putside_key, PutSide.BEFORE)
+    default_mirrored = get_default_value(session_state, mirrored_key, False)
+    default_putside = '之前' if default_putside == PutSide.BEFORE else '之后'
+    default_mirrored = '左' if default_mirrored else '右'
 
     uicols = st.columns([2, 1])
     with uicols[0]:
-        pos = st.select_slider(f'齿轮 {gear_idx + 1} 位置 (mm)',
-                               options=length_range,
-                               value=default_pos)
+        f = choose_feature_ui(feats, '齿轮紧贴在', default=default_rely)
+        forward = st.select_slider('轴向力朝向', ['左', '右'], default_mirrored)
     with uicols[1]:
-        plane = st.radio(f'轴向力平面',
-                         ['z', 'y'],
-                         index=default_plane)
+        plane = st.radio('轴向力平面', ['z', 'y'], horizontal=True, index=default_plane)
+        putside = st.select_slider('放置位置', ['之前', '之后'], default_putside)
 
     return {
-        'position': pos,
+        'rely': f,
         'force_plane': plane,
         'width': float(bs[gear_idx]),
         'diameter': float(ds[gear_idx]),
         'radial_force': float(fr[gear_idx]),
         'tangential_force': float(ft[gear_idx]),
-        'axial_force': float(fa[gear_idx])
+        'axial_force': float(fa[gear_idx]),
+        'putside': PutSide.BEFORE if putside == '之前' else PutSide.AFTER,
+        'mirrored': forward == '左'
     }
 
 
@@ -261,85 +428,41 @@ def make_shaft_ui(d_init: float, gears: list[int]):
     # 创建轴对象
     shaft = Shaft(d_init)
     shaft.end_at(s_length)
-    
+
     # 处理轴外形
-    features = get_default_value(session_state, 'features', [])
-    steps, shoulders = [], []
-    placable_feats = []
-    for f in features:
-        match f['type']:
-            case 'step':
-                if 'h' in f:
-                    steps.append((f['pos'], f['h'], '高度'))
-                    placable_feats.append(shaft.add_step(f['pos'], f['h']))
-                else:
-                    steps.append((f['pos'], f['d'], '直径'))
-                    placable_feats.append(shaft.add_step(f['pos'], diameter=f['d']))
-            case 'shoulder':
-                shoulders.append((f['pos'], f['h'], f['w']))
-                placable_feats.append(shaft.add_shoulder(f['pos'], f['h'], f['w']))
-    def strfmt(*v):
-        return (str(vv) if vv.is_integer() else f'{vv: .1f}' for vv in v)
-    steps_data = zip(*((*strfmt(s[:1]), s[2]) for s in steps))
-    shoulders_data = zip(*(strfmt(s) for s in shoulders))
-    steps_data = pd.DataFrame(steps_data, columns=['位置', '尺寸', '类型'])
-    steps_data.index.name = '序号'
-    shoulders_data = pd.DataFrame(shoulders_data, columns=['位置', '高度', '宽度'])
-    steps_data.index.name = '序号'
-    uicols = st.columns(2)
-    with uicols[0]:
-        st.data_editor(steps_data, key='stepdata')
-        pos = st.select_slider(
-            '阶梯位置', options=length_range, value=s_length / 2)
-        sz = st.number_input('尺寸', value=1)
-        stype = st.radio('尺寸类型', ['高度', '直径'], horizontal=True)
-        steps_data.add((pos, sz, stype))
-    with uicols[1]:
-        st.data_editor(steps_data, key='shoulderdata')
-        pos = st.select_slider(
-            '环位置', options=length_range, value=s_length / 2)
-        height = st.number_input('高度', value=1)
-        width = st.number_input('宽度', value=1)
-        shoulders_data.add((pos, height, width))
-    # 解析steps_data和shoulders_data，填充到features内
-    features = []
-    for idx, row in steps_data.iterrows():
-        pos, size, stype = row['位置'], row['尺寸'], row['类型']
-        if stype == '高度':
-            features.append({'type': 'step', 'pos': pos, 'h': size})
-        else:
-            features.append({'type': 'step', 'pos': pos, 'd': size})
-
-    for idx, row in shoulders_data.iterrows():
-        pos, height, width = row['位置'], row['高度'], row['宽度']
-        features.append({'type': 'shoulder', 'pos': pos, 'h': height, 'w': width})
-
-    session_state['features'] = features
+    placable_feats = design_shaft_ui(session_state, shaft,
+                    length_range, s_length)
+    # print(session_state['features'])
 
     # 处理齿轮配置
     gear_params = []
     for gear_idx in gears:
         params = create_gear_ui(session_state, gear_idx,
-                                length_range, s_length,
-                                bs,
+                                placable_feats, bs,
                                 df.loc['径向力 (N)', cols].values,
                                 df.loc['切向力 (N)', cols].values,
                                 df.loc['轴向力 (N)', cols].values,
                                 df.loc['分度圆直径 (mm)', cols].values)
         gear_params.append(params)
-        session_state[f"gear_{gear_idx}_pos"] = params['position']
+        session_state[f"gear_{gear_idx}_rely"] = params['rely']
         session_state[f"gear_{gear_idx}_plane"] = [
             'z', 'y'].index(params['force_plane'])
+        session_state[f"gear_{gear_idx}_putside"] = params['putside'].value
+        session_state[f"gear_{gear_idx}_mirrored"] = params['mirrored']
 
     # 添加齿轮到轴
     for params in gear_params:
-        shaft.add_gear(params['position'],
-                       params['width'],
+        if params['rely'] is None:
+            continue
+        shaft.add_gear(params['rely'],
                        params['diameter'],
+                       params['width'],
                        params['radial_force'],
                        params['tangential_force'],
-                       params['axial_force'],
-                       params['force_plane'])
+                       -params['axial_force'] if params['mirrored'] else params['axial_force'],
+                       params['force_plane'],
+                       params['putside']
+                       )
 
     # 处理联轴器
     if st.checkbox('是否有联轴器', value=session_state.get('has_coupling', False)):
@@ -347,7 +470,7 @@ def make_shaft_ui(d_init: float, gears: list[int]):
             session_state, length_range, s_length)
         direction = coupling_params['direction']
         force = coupling_params['force']
-        shaft.fix_twist(coupling_params['position'],
+        shaft.add_coupling(coupling_params['position'],
                         force if direction == 'y' else 0,
                         force if direction == 'z' else 0)
         session_state['coupling_pos'] = coupling_params['position']
@@ -356,7 +479,7 @@ def make_shaft_ui(d_init: float, gears: list[int]):
 
     # 处理轴承
     bearing_params = create_bearing_ui(session_state, length_range, s_length)
-    shaft.fix_bearing(bearing_params['bearing1'], bearing_params['bearing2'])
+    
     session_state['bearing1_pos'] = bearing_params['bearing1']
     session_state['bearing2_pos'] = bearing_params['bearing2']
 

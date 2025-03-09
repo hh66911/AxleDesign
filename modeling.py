@@ -4,10 +4,13 @@ import warnings
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 from numpy import ndarray
+from mygraph import m_graph, t_graph
 
 from drawer import Drawer, Path2D
 from matplotlib import pyplot as plt
+
 
 class BadDesignWarning(UserWarning):
     pass
@@ -49,6 +52,108 @@ class Angle:
 
     def tan(self):
         return math.tan(self.to_radians())
+
+
+class Bearing:
+    size_df = pd.read_excel(r"D:\BaiduSyncdisk\球轴承尺寸.xlsx")
+
+    def __init__(self, code):
+        self.code = code
+        if code.startswith('16'):
+            bearing_type = '6'
+        else:
+            bearing_type = code[0]
+        match bearing_type:
+            case '7':
+                name = '角接触球轴承'
+                if code.endswith('AC'):
+                    angle = 25
+                elif code.endswith('B'):
+                    raise ValueError('不支持B型角接触球轴承')
+                elif code.endswith('C'):
+                    angle = 15
+                    code = code[:-1]
+                else:
+                    raise ValueError('角度信息缺失')
+            case '6':
+                name = '深沟球轴承'
+                angle = None
+            case _:
+                raise ValueError('不支持的轴承类型')
+
+        code = '7' + self.code[1:]
+        codes = Bearing.size_df[["a1", 'a2']]
+        idx = codes.stack()[codes.stack() == code]
+        idx = list(set(i[0] for i in idx.index))
+        if len(idx) > 1:
+            raise ValueError(f'错误的型号，多个值找到：{idx}')
+        elif len(idx) == 0:
+            raise ValueError(f'错误的型号，未找到：{code}')
+        size_data = Bearing.size_df.loc[idx[0], :]
+        (
+            self.d, self.da,
+            self.b, self.c,
+            self.c1
+        ) = size_data[['d', 'D', 'B', 'c', 'c1']]
+
+        self.name = name
+        self.angle = np.deg2rad(angle) if angle is not None else 0
+
+        length = (self.da - self.d) / 2
+        ball_radius = length / 4
+        self.inner_thick = length / 2 - ball_radius * np.cos(np.pi / 3)
+
+    def check_attach(self, height):
+        if height > self.inner_thick * 4 / 5:
+            warnings.warn(
+                f'高度 {height} 超过了轴承内圈厚度的 4/5', BadDesignWarning)
+            return False
+        return True
+
+    def __repr__(self):
+        return f'Bearing({self.code})'
+
+    def __str__(self):
+        return f'{self.name} {self.code} {self.d}x{self.da}x{self.b}'
+
+    @staticmethod
+    def parse_code_size(digits):
+        # 初始化变量
+        A = B = C = D = None
+
+        def get_size(d1, d2):
+            d = int(d1) * 10 + int(d2)
+            if d <= 3:
+                d = [10, 12, 15, 17][d]
+            else:
+                d = d * 5
+            return d
+
+        # 匹配五位数字开头的情况：ABCDD
+        five_digit_pattern = re.match(r'^(\d)(\d)(\d)(\d)$', digits)
+        if five_digit_pattern:
+            A, B, C, D1, D2 = five_digit_pattern.groups()
+            A, B, C = int(A), int(B), int(C)
+            D = get_size(D1, D2)
+        # 匹配四位数开头的情况：ABDD
+        else:
+            four_digit_pattern = re.match(r'^(\d)(\d)(\d)$', digits)
+            if four_digit_pattern:
+                A, C, D1, D2 = four_digit_pattern.groups()
+                A, C = int(A), int(C)
+                B = 0 if C != 0 else 1
+                D = get_size(D1, D2)
+            # 匹配三位数开头并跟随一个斜杠和数值的情况：ABC/D
+            else:
+                three_digit_with_slash_pattern = re.match(
+                    r'^(\d)(\d)/([\d.]+)$', digits)
+                if three_digit_with_slash_pattern:
+                    A, B, C, D = three_digit_with_slash_pattern.groups()
+                    A, B, C = int(A), int(B), int(C)
+                    D = float(D)
+
+        # 返回结果
+        return A, B, C, D
 
 
 class KeywayType(Enum):
@@ -130,8 +235,12 @@ class Fillet:
 
 
 @dataclass
-class _StepFeature:
+class _FixedFeature:
     position: float
+
+
+@dataclass
+class _StepFeature(_FixedFeature):
     size: float
     is_abs: bool
 
@@ -140,43 +249,52 @@ class _StepFeature:
 
 
 @dataclass
-class _ShoulderFeature:
-    position: float
+class _ShoulderFeature(_FixedFeature):
     width: float
 
 
 @dataclass
-class _BushingFeature:
-    position: float
+class _BushingFeature(_FixedFeature):
     height: float
     width: float
 
 
 @dataclass
-class _KeywayFeature:
-    position: float
+class _KeywayFeature(_FixedFeature):
     inst: Keyway
     forward: bool
 
 
 @dataclass
-class _GearFeature:
-    position: float
+class _GearFeature(_FixedFeature):
     bold: float
     da: float
-    forward: bool
 
 
 @dataclass
-class _BearingFeature:
-    position: float
-    bold: float
-    da: float
+class _BearingFeature(_FixedFeature):
+    inst: Bearing
     forward: bool
 
 
-def get_feature_name(feat):
-    
+def get_feature_name(feat, chinese=False):
+    """
+        根据特征对象的类型返回相应的特征名称。
+    """
+    if isinstance(feat, _StepFeature):
+        return '阶梯' if chinese else "Step"
+    elif isinstance(feat, _ShoulderFeature):
+        return "轴肩" if chinese else "Shoulder"
+    elif isinstance(feat, _BushingFeature):
+        return "轴套" if chinese else "Bushing"
+    elif isinstance(feat, _KeywayFeature):
+        return "键槽" if chinese else "Keyway"
+    elif isinstance(feat, _GearFeature):
+        return "齿轮" if chinese else "Gear"
+    elif isinstance(feat, _BearingFeature):
+        return "轴承" if chinese else "Bearing"
+    else:
+        raise TypeError('未知特征名')
 
 
 class PutSide(Enum):
@@ -245,10 +363,68 @@ class Shaft:
         }
         self.need_refresh = True
 
+        self.coupling_pos = None
+        self.forces = {'y': [], 'z': []}    # 受力 [位置, 数量]
+        self.bends = {'y': [], 'z': []}    # 受弯矩 [位置, 数量]
+        self.twists = []                    # 受转矩
+
         self.gears: list[_GearFeature] = []
         self.keyways: list[_KeywayFeature] = []
         self.bearings: list[_BearingFeature] = []
         self.bushings: list[_BushingFeature] = []
+
+    def add_force(self, pos, val_y=+0., val_z=+0.):
+        '''
+        添加受力
+
+        Args:
+            pos: float
+                位置
+            val_y: float
+                y方向数量（正方向向下）
+            val_z: float
+                z方向数量（正方向向下）
+        '''
+        if abs(val_y) > 0.1:
+            self.forces['y'].append((pos, val_y))
+        if abs(val_z) > 0.1:
+            self.forces['z'].append((pos, val_z))
+
+    def add_bend(self, pos, val_y=+0., val_z=+0.):
+        '''
+        添加弯矩
+
+        Args:
+            pos: float
+                位置
+            val_y: float
+                y方向数量（正方向为逆时针）
+            val_z: float
+                z方向数量（正方向为逆时针）
+        '''
+        if abs(val_y) > 0.1:
+            self.bends['y'].append((pos, val_y))
+        if abs(val_z) > 0.1:
+            self.bends['z'].append((pos, val_z))
+
+    def add_twist(self, pos, val):
+        '''
+        添加扭矩
+
+        Args:
+            pos: float
+                位置
+            val: float
+                数量
+        '''
+        if val != 0:
+            self.twists.append((pos, val))
+
+    def add_coupling(self, pos, fqy=0, fqz=0):
+        twist_sum = sum(map(lambda x: x[1], self.twists))
+        self.add_twist(pos, -twist_sum)
+        self.coupling_pos = pos
+        self.add_force(pos, fqy, fqz)
 
     def add_step(self, position, height=None, diameter=None):
         if height is not None:
@@ -298,25 +474,59 @@ class Shaft:
         ))
         return self.keyways[-1]
 
-    def add_gear(self, pos_or_feat, da, bold,
-                 forward=True, put_side=PutSide.BEFORE):
+    def add_gear(self, pos_or_feat, da, bold, fr, ft, fa, bend_plane,
+                 put_side=PutSide.BEFORE):
         if not isinstance(pos_or_feat, float):
-            pos_or_feat = pos_or_feat.position + _get_offset(
+            position = pos_or_feat.position + _get_offset(
                 pos_or_feat, bold / 2, put_side)
+        else:
+            position = pos_or_feat
 
-        self.gears.append(
-            _GearFeature(pos_or_feat, bold, da, forward
-                         ))
+        self.add_force(position, ft, fr)
+        if bend_plane == 'z':
+            self.add_bend(position, 0, -fa * da / 2)
+        else:
+            self.add_bend(position, -fa * da / 2, 0)
+        self.add_twist(position, ft * da / 2)
+
+        self.gears.append(_GearFeature(position, bold, da))
         return self.gears[-1]
 
-    def add_bearing(self, feat, da, bold,
+    def add_bearing(self, feat, code,
                     forward=True, put_side=PutSide.BEFORE):
         if not isinstance(feat, _BushingFeature):
             raise NotImplementedError(f"不支持的特征类型: {type(feat)}")
+        b = Bearing(code)
         pos = feat.position + _get_offset(
-            feat, bold / 2, put_side)
-        self.bearings.append(_BearingFeature(pos, bold, da, forward))
+            feat, b.b / 2, put_side)
+        self.bearings.append(_BearingFeature(pos, b, forward))
         return self.bearings[-1]
+
+    def solve_bearings(self):
+        if len(self.bearings) != 2:
+            raise ValueError("轴承数量不正确。")
+        b1, b2 = self.bearings[0], self.bearings[1]
+        p1, p2 = b1.position, b2.position
+        d1, d2 = b1.inst.d, b2.inst.d
+        if d1 != self._get_diameter_at(p1, True):
+            raise ValueError("轴承1的直径不匹配。")
+        if d2 != self._get_diameter_at(p2, True):
+            raise ValueError("轴承2的直径不匹配。")
+        # 计算轴承 y 平面的力
+        f_sum = sum(map(lambda x: x[1], self.forces['y']))
+        m_sum = sum(map(lambda x: x[0] * x[1], self.forces['y'])) - \
+            sum(map(lambda x: x[1], self.bends['y']))
+        f1y = (m_sum - p2 * f_sum) / (p1 - p2)
+        f2y = f_sum - f1y
+        # 计算轴承 z 平面的力
+        f_sum = sum(map(lambda x: x[1], self.forces['z']))
+        m_sum = sum(map(lambda x: x[0] * x[1], self.forces['z'])) - \
+            sum(map(lambda x: x[1], self.bends['z']))
+        f1z = (m_sum - p2 * f_sum) / (p1 - p2)
+        f2z = f_sum - f1z
+        # 添加轴承力
+        self.add_force(p1, -f1y, -f1z)
+        self.add_force(p2, -f2y, -f2z)
 
     def _get_diameter_at(self, pos, check_length=True,
                          put_side=PutSide.BEFORE):
@@ -469,10 +679,10 @@ class Shaft:
         path.goto(self.length, 0)
         path.draw(drawer)
 
-    def plot(self, do_fillet=False):
+    def plot(self, figsize=(12, 6), do_fillet=False):
         self.process_features(do_fillet)
-        
-        drawer = Drawer()
+
+        drawer = Drawer(figsize)
 
         for feat in self.bearings:
             pos = feat.position
@@ -521,7 +731,61 @@ class Shaft:
             pt1 = (pos - length / 2, width / 2)
             pt2 = (pos + length / 2, -width / 2)
             drawer.rect(pt1, pt2, 'gold')
-            
+
+        if self.coupling_pos is not None:
+            d = self._get_diameter_at(self.coupling_pos)
+            drawer.line((self.coupling_pos, -d),
+                        (self.coupling_pos, d), 'brown')
+
+        # 绘制力
+        def draw_force(dir, val):
+            if dir == 'y':
+                draw_dir = (1 if val < 0 else -1) * self.length / 20
+                drawer.ax.arrow(pos, 0, draw_dir, draw_dir, head_width=2,
+                                head_length=4, fc='r', ec='r')
+            elif dir == 'z':
+                draw_dir = (1 if val < 0 else -1) * self.length / 20
+                drawer.ax.arrow(pos, 0, 0, draw_dir, head_width=2,
+                                head_length=4, fc='r', ec='r')
+
+        def draw_bend(plane: str, val):
+            # 生成圆弧的点
+            if val > 0:
+                theta = np.linspace(-np.pi / 2, 0, 100)
+            else:
+                theta = np.linspace(np.pi, np.pi / 2, 100)
+            if plane == 'y':  # xoy 平面
+                x = pos + 10 * np.cos(theta)
+                # 为了区分 y 和 z 方向，将 z 方向的曲线在 y 轴上偏移
+                y_offset = -12 if val > 0 else 10
+                y = y_offset + 10 * np.sin(theta) / 2
+                hw, hl = 2, 2
+            elif plane == 'z':  # xoz 平面
+                x = pos + 10 * np.cos(theta)
+                y = 10 * np.sin(theta)
+                hw, hl = 3, 4
+            else:
+                raise ValueError('未知的平面')
+            if val > 0:
+                arror_d = (0, 1)
+            else:
+                arror_d = (1, 0)
+            drawer.ax.plot(x, y, color='r', lw=2)
+            arrow_start = (x[-1], y[-1])
+            drawer.ax.arrow(
+                arrow_start[0], arrow_start[1], arror_d[0], arror_d[1],
+                head_width=hw, head_length=hl, fc='r', ec='r'
+            )
+
+        for pos, val in self.forces['y']:
+            draw_force('y', val)
+        for pos, val in self.forces['z']:
+            draw_force('z', val)
+        for pos, val in self.bends['y']:
+            draw_bend('y', val)
+        for pos, val in self.bends['z']:
+            draw_bend('z', val)
+
         return drawer.fig
 
     def get_sampled_W(self, n=5000):
@@ -630,9 +894,9 @@ def calc_typeB(s: Shaft, sigT: float, alpha=0.6, sample_N=5000):
     # 计算扭矩
     (_, twist), tfig = t_graph(s.twists, length, sample_N)
     # 计算弯扭组合应力
-    _, W = s.calculate_W(sample_N)  # 计算截面模量
+    _, W, Wt = s.get_sampled_W(sample_N)  # 计算截面模量
     sigma_bend = bend_total / W  # MPa
-    sigma_t = alpha * twist / W  # MPa
+    sigma_t = alpha * twist / Wt  # MPa
     sigma_total = (sigma_bend**2 + sigma_t**2)**0.5
     sigma_fig = plt.figure(figsize=(16, 6))
     pos = np.linspace(0, length, sample_N)
